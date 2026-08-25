@@ -6,11 +6,12 @@ import time
 from xml.etree import ElementTree
 
 import httpx
-from ai import analyze_image, ask_ai
+from ai import analyze_image, ask_ai, transcribe_audio
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse, Response
 from memory import clear_history, get_history, save_turn
+from wechat_api import download_voice_media
 
 
 load_dotenv()
@@ -116,6 +117,8 @@ async def handle_wechat_message(
             "Content",
             "PicUrl",
             "MediaId",
+            "Format",
+            "Recognition",
             "MsgId",
         )
     }
@@ -152,6 +155,50 @@ async def handle_wechat_message(
                 reply_content = "AI 暂时无法分析这张图片，请稍后再试。"
             else:
                 save_turn(user_id, "[用户发送了一张图片]", reply_content)
+    elif message_type == "voice":
+        voice_text = (fields["Recognition"] or "").strip()
+        if not voice_text:
+            try:
+                audio_bytes = await download_voice_media(fields["MediaId"])
+            except Exception as exc:
+                logger.warning("Voice download failed: %s", type(exc).__name__)
+                reply_content = "语音获取失败，请稍后再试。"
+            else:
+                audio_format = (fields["Format"] or "").strip().lower()
+                safe_formats = {
+                    "flac",
+                    "m4a",
+                    "mp3",
+                    "mp4",
+                    "mpeg",
+                    "mpga",
+                    "ogg",
+                    "wav",
+                    "webm",
+                    "amr",
+                    "speex",
+                }
+                if audio_format not in safe_formats:
+                    audio_format = "bin"
+                try:
+                    voice_text = transcribe_audio(
+                        audio_bytes, f"voice.{audio_format}"
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Voice transcription failed: %s", type(exc).__name__
+                    )
+                    reply_content = "暂时无法识别这段语音，请稍后再试。"
+
+        if voice_text:
+            history = get_history(user_id)
+            try:
+                reply_content = ask_ai(voice_text, history)
+            except Exception as exc:
+                logger.warning("AI reply failed: %s", type(exc).__name__)
+                reply_content = "AI 暂时无法回复，请稍后再试。"
+            else:
+                save_turn(user_id, voice_text, reply_content)
     else:
         return PlainTextResponse("success")
 

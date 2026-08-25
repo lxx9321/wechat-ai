@@ -7,6 +7,9 @@ from openai import OpenAI
 
 load_dotenv()
 MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-5-nano")
+TRANSCRIBE_MODEL = os.getenv(
+    "OPENAI_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe"
+)
 
 
 class AIError(RuntimeError):
@@ -87,3 +90,34 @@ def analyze_image(image_bytes: bytes, mime_type: str) -> str:
         raise AIError("OpenAI 图片分析成功，但没有返回文本内容。")
 
     return response.output_text
+
+
+def transcribe_audio(audio_bytes: bytes, filename: str) -> str:
+    load_dotenv()
+    api_key = os.getenv("OPENAI_API_KEY")
+
+    if not api_key:
+        raise AIError("缺少 OPENAI_API_KEY，请先在 .env 中配置。")
+
+    client = OpenAI(api_key=api_key, timeout=5.0, max_retries=0)
+    try:
+        transcription = client.audio.transcriptions.create(
+            model=TRANSCRIBE_MODEL,
+            file=(filename, audio_bytes),
+        )
+    except Exception as exc:
+        safe_message = str(exc).replace(api_key, "[REDACTED]")
+        raise AIError(f"OpenAI 语音识别失败：{safe_message}") from exc
+    finally:
+        client.close()
+
+    transcript_text = (
+        transcription
+        if isinstance(transcription, str)
+        else getattr(transcription, "text", "")
+    )
+    transcript_text = transcript_text.strip()
+    if not transcript_text:
+        raise AIError("OpenAI 语音识别成功，但没有返回文字内容。")
+
+    return transcript_text
