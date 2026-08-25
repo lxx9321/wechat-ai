@@ -1,16 +1,25 @@
 import hashlib
 import hmac
 import os
+import time
+from xml.etree import ElementTree
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
-from fastapi.responses import PlainTextResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import PlainTextResponse, Response
 
 
 load_dotenv()
 
 app = FastAPI()
 WECHAT_TOKEN = os.environ["WECHAT_TOKEN"]
+
+
+def verify_signature(signature: str, timestamp: str, nonce: str) -> bool:
+    values = [WECHAT_TOKEN, timestamp, nonce]
+    values.sort()
+    digest = hashlib.sha1("".join(values).encode("utf-8")).hexdigest()
+    return hmac.compare_digest(digest, signature)
 
 
 @app.get("/")
@@ -25,11 +34,55 @@ def verify_wechat(
     nonce: str,
     echostr: str,
 ):
-    values = [WECHAT_TOKEN, timestamp, nonce]
-    values.sort()
-    digest = hashlib.sha1("".join(values).encode("utf-8")).hexdigest()
-
-    if not hmac.compare_digest(digest, signature):
+    if not verify_signature(signature, timestamp, nonce):
         return PlainTextResponse("invalid signature", status_code=403)
 
     return PlainTextResponse(echostr)
+
+
+@app.post("/wechat")
+async def handle_wechat_message(
+    request: Request,
+    signature: str,
+    timestamp: str,
+    nonce: str,
+):
+    if not verify_signature(signature, timestamp, nonce):
+        return PlainTextResponse("invalid signature", status_code=403)
+
+    request_body = await request.body()
+
+    try:
+        root = ElementTree.fromstring(request_body)
+    except ElementTree.ParseError:
+        return PlainTextResponse("invalid xml", status_code=400)
+
+    fields = {
+        name: root.findtext(name, default="")
+        for name in (
+            "ToUserName",
+            "FromUserName",
+            "CreateTime",
+            "MsgType",
+            "Content",
+            "MsgId",
+        )
+    }
+
+    if fields["MsgType"] != "text":
+        return PlainTextResponse("success")
+
+    reply = ElementTree.Element("xml")
+    reply_fields = {
+        "ToUserName": fields["FromUserName"],
+        "FromUserName": fields["ToUserName"],
+        "CreateTime": str(int(time.time())),
+        "MsgType": "text",
+        "Content": f"收到你的消息：{fields['Content']}",
+    }
+
+    for name, value in reply_fields.items():
+        ElementTree.SubElement(reply, name).text = value
+
+    response_body = ElementTree.tostring(reply, encoding="utf-8")
+    return Response(content=response_body, media_type="application/xml")
