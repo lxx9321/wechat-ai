@@ -204,7 +204,7 @@ async def handle_wechat_message(
         if voice_debug_format not in {"amr", "speex"}:
             voice_debug_format = "unknown"
         media_id_present = bool((fields["MediaId"] or "").strip())
-        logger.info(
+        logger.warning(
             "voice_debug: recognition_present=%s recognition_empty=%s "
             "format=%s media_id_present=%s",
             str(recognition_present).lower(),
