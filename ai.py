@@ -4,7 +4,8 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 
-MODEL_NAME = "gpt-5-nano"
+load_dotenv()
+MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-5-nano")
 
 
 class AIError(RuntimeError):
