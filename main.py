@@ -19,6 +19,7 @@ from wechat_api import download_voice_media
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 app = FastAPI()
 WECHAT_TOKEN = os.environ["WECHAT_TOKEN"]
 IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 2.0
@@ -197,6 +198,21 @@ async def handle_wechat_message(
                 else:
                     save_turn(user_id, "[用户发送了一张图片]", reply_content)
     elif message_type == "voice":
+        recognition_present = root.find("Recognition") is not None
+        recognition_empty = not bool((fields["Recognition"] or "").strip())
+        voice_debug_format = (fields["Format"] or "").strip().lower()
+        if voice_debug_format not in {"amr", "speex"}:
+            voice_debug_format = "unknown"
+        media_id_present = bool((fields["MediaId"] or "").strip())
+        logger.info(
+            "voice_debug: recognition_present=%s recognition_empty=%s "
+            "format=%s media_id_present=%s",
+            str(recognition_present).lower(),
+            str(recognition_empty).lower(),
+            voice_debug_format,
+            str(media_id_present).lower(),
+        )
+
         voice_text = (fields["Recognition"] or "").strip()
         if not voice_text and not WECHAT_MEDIA_VOICE_FALLBACK_ENABLED:
             reply_content = "暂时无法识别这段语音，请稍后再试。"
