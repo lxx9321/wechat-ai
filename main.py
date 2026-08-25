@@ -6,6 +6,7 @@ import time
 from xml.etree import ElementTree
 
 import httpx
+from access_control import is_user_allowed, is_within_rate_limit
 from ai import analyze_image, ask_ai, transcribe_audio
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
@@ -125,13 +126,20 @@ async def handle_wechat_message(
 
     message_type = fields["MsgType"]
     user_id = fields["FromUserName"] or ""
-    if message_type == "text":
+    if (
+        message_type in {"text", "image", "voice"}
+        and not is_user_allowed(user_id)
+    ):
+        reply_content = "当前账号暂未开放AI功能。"
+    elif message_type == "text":
         user_message = (fields["Content"] or "").strip()
         if user_message == "清空记忆":
             clear_history(user_id)
             reply_content = "聊天记忆已清空。"
         elif not user_message:
             reply_content = "请输入内容后再发送。"
+        elif not is_within_rate_limit(user_id):
+            reply_content = "消息发送太频繁，请稍后再试。"
         else:
             history = get_history(user_id)
             try:
@@ -148,13 +156,16 @@ async def handle_wechat_message(
             logger.warning("Image download failed: %s", type(exc).__name__)
             reply_content = "图片获取失败，请稍后再试。"
         else:
-            try:
-                reply_content = analyze_image(image_bytes, mime_type)
-            except Exception as exc:
-                logger.warning("Image analysis failed: %s", type(exc).__name__)
-                reply_content = "AI 暂时无法分析这张图片，请稍后再试。"
+            if not is_within_rate_limit(user_id):
+                reply_content = "消息发送太频繁，请稍后再试。"
             else:
-                save_turn(user_id, "[用户发送了一张图片]", reply_content)
+                try:
+                    reply_content = analyze_image(image_bytes, mime_type)
+                except Exception as exc:
+                    logger.warning("Image analysis failed: %s", type(exc).__name__)
+                    reply_content = "AI 暂时无法分析这张图片，请稍后再试。"
+                else:
+                    save_turn(user_id, "[用户发送了一张图片]", reply_content)
     elif message_type == "voice":
         voice_text = (fields["Recognition"] or "").strip()
         if not voice_text:
@@ -180,25 +191,31 @@ async def handle_wechat_message(
                 }
                 if audio_format not in safe_formats:
                     audio_format = "bin"
-                try:
-                    voice_text = transcribe_audio(
-                        audio_bytes, f"voice.{audio_format}"
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "Voice transcription failed: %s", type(exc).__name__
-                    )
-                    reply_content = "暂时无法识别这段语音，请稍后再试。"
+                if not is_within_rate_limit(user_id):
+                    reply_content = "消息发送太频繁，请稍后再试。"
+                else:
+                    try:
+                        voice_text = transcribe_audio(
+                            audio_bytes, f"voice.{audio_format}"
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Voice transcription failed: %s", type(exc).__name__
+                        )
+                        reply_content = "暂时无法识别这段语音，请稍后再试。"
 
         if voice_text:
-            history = get_history(user_id)
-            try:
-                reply_content = ask_ai(voice_text, history)
-            except Exception as exc:
-                logger.warning("AI reply failed: %s", type(exc).__name__)
-                reply_content = "AI 暂时无法回复，请稍后再试。"
+            if not is_within_rate_limit(user_id):
+                reply_content = "消息发送太频繁，请稍后再试。"
             else:
-                save_turn(user_id, voice_text, reply_content)
+                history = get_history(user_id)
+                try:
+                    reply_content = ask_ai(voice_text, history)
+                except Exception as exc:
+                    logger.warning("AI reply failed: %s", type(exc).__name__)
+                    reply_content = "AI 暂时无法回复，请稍后再试。"
+                else:
+                    save_turn(user_id, voice_text, reply_content)
     else:
         return PlainTextResponse("success")
 
