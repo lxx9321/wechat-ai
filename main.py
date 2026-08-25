@@ -5,7 +5,8 @@ import os
 import time
 from xml.etree import ElementTree
 
-from ai import ask_ai
+import httpx
+from ai import analyze_image, ask_ai
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse, Response
@@ -17,6 +18,50 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 app = FastAPI()
 WECHAT_TOKEN = os.environ["WECHAT_TOKEN"]
+IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 2.0
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
+
+
+class ImageDownloadError(RuntimeError):
+    """微信图片下载或校验失败。"""
+
+
+async def download_wechat_image(pic_url: str) -> tuple[bytes, str]:
+    if not pic_url:
+        raise ImageDownloadError("missing image URL")
+
+    timeout = httpx.Timeout(IMAGE_DOWNLOAD_TIMEOUT_SECONDS)
+    transport = httpx.AsyncHTTPTransport(retries=0)
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        transport=transport,
+        follow_redirects=True,
+    ) as client:
+        async with client.stream("GET", pic_url) as response:
+            response.raise_for_status()
+            mime_type = response.headers.get("content-type", "").split(";", 1)[0]
+            mime_type = mime_type.strip().lower()
+            if not mime_type.startswith("image/"):
+                raise ImageDownloadError("invalid image content type")
+
+            content_length = response.headers.get("content-length")
+            if content_length:
+                try:
+                    if int(content_length) > MAX_IMAGE_BYTES:
+                        raise ImageDownloadError("image is too large")
+                except ValueError:
+                    pass
+
+            image_data = bytearray()
+            async for chunk in response.aiter_bytes():
+                image_data.extend(chunk)
+                if len(image_data) > MAX_IMAGE_BYTES:
+                    raise ImageDownloadError("image is too large")
+
+    if not image_data:
+        raise ImageDownloadError("empty image")
+
+    return bytes(image_data), mime_type
 
 
 def verify_signature(signature: str, timestamp: str, nonce: str) -> bool:
@@ -69,29 +114,46 @@ async def handle_wechat_message(
             "CreateTime",
             "MsgType",
             "Content",
+            "PicUrl",
+            "MediaId",
             "MsgId",
         )
     }
 
-    if fields["MsgType"] != "text":
-        return PlainTextResponse("success")
-
-    user_message = (fields["Content"] or "").strip()
+    message_type = fields["MsgType"]
     user_id = fields["FromUserName"] or ""
-    if user_message == "清空记忆":
-        clear_history(user_id)
-        reply_content = "聊天记忆已清空。"
-    elif not user_message:
-        reply_content = "请输入内容后再发送。"
-    else:
-        history = get_history(user_id)
-        try:
-            reply_content = ask_ai(user_message, history)
-        except Exception as exc:
-            logger.warning("AI reply failed: %s", type(exc).__name__)
-            reply_content = "AI 暂时无法回复，请稍后再试。"
+    if message_type == "text":
+        user_message = (fields["Content"] or "").strip()
+        if user_message == "清空记忆":
+            clear_history(user_id)
+            reply_content = "聊天记忆已清空。"
+        elif not user_message:
+            reply_content = "请输入内容后再发送。"
         else:
-            save_turn(user_id, user_message, reply_content)
+            history = get_history(user_id)
+            try:
+                reply_content = ask_ai(user_message, history)
+            except Exception as exc:
+                logger.warning("AI reply failed: %s", type(exc).__name__)
+                reply_content = "AI 暂时无法回复，请稍后再试。"
+            else:
+                save_turn(user_id, user_message, reply_content)
+    elif message_type == "image":
+        try:
+            image_bytes, mime_type = await download_wechat_image(fields["PicUrl"])
+        except Exception as exc:
+            logger.warning("Image download failed: %s", type(exc).__name__)
+            reply_content = "图片获取失败，请稍后再试。"
+        else:
+            try:
+                reply_content = analyze_image(image_bytes, mime_type)
+            except Exception as exc:
+                logger.warning("Image analysis failed: %s", type(exc).__name__)
+                reply_content = "AI 暂时无法分析这张图片，请稍后再试。"
+            else:
+                save_turn(user_id, "[用户发送了一张图片]", reply_content)
+    else:
+        return PlainTextResponse("success")
 
     reply = ElementTree.Element("xml")
     reply_fields = {
