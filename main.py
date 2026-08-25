@@ -8,6 +8,7 @@ from xml.etree import ElementTree
 import httpx
 from access_control import is_user_allowed, is_within_rate_limit
 from ai import analyze_image, ask_ai, transcribe_audio
+from audio_utils import convert_audio_to_wav
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse, Response
@@ -19,7 +20,6 @@ from wechat_api import download_voice_media
 load_dotenv()
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 app = FastAPI()
 WECHAT_TOKEN = os.environ["WECHAT_TOKEN"]
 IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 2.0
@@ -198,21 +198,6 @@ async def handle_wechat_message(
                 else:
                     save_turn(user_id, "[用户发送了一张图片]", reply_content)
     elif message_type == "voice":
-        recognition_present = root.find("Recognition") is not None
-        recognition_empty = not bool((fields["Recognition"] or "").strip())
-        voice_debug_format = (fields["Format"] or "").strip().lower()
-        if voice_debug_format not in {"amr", "speex"}:
-            voice_debug_format = "unknown"
-        media_id_present = bool((fields["MediaId"] or "").strip())
-        logger.warning(
-            "voice_debug: recognition_present=%s recognition_empty=%s "
-            "format=%s media_id_present=%s",
-            str(recognition_present).lower(),
-            str(recognition_empty).lower(),
-            voice_debug_format,
-            str(media_id_present).lower(),
-        )
-
         voice_text = (fields["Recognition"] or "").strip()
         if not voice_text and not WECHAT_MEDIA_VOICE_FALLBACK_ENABLED:
             reply_content = "暂时无法识别这段语音，请稍后再试。"
@@ -224,33 +209,33 @@ async def handle_wechat_message(
                 reply_content = "语音获取失败，请稍后再试。"
             else:
                 audio_format = (fields["Format"] or "").strip().lower()
-                safe_formats = {
-                    "flac",
-                    "m4a",
-                    "mp3",
-                    "mp4",
-                    "mpeg",
-                    "mpga",
-                    "ogg",
-                    "wav",
-                    "webm",
-                    "amr",
-                    "speex",
-                }
-                if audio_format not in safe_formats:
-                    audio_format = "bin"
-                if not is_within_rate_limit(user_id):
-                    reply_content = "消息发送太频繁，请稍后再试。"
+                try:
+                    wav_bytes = convert_audio_to_wav(
+                        audio_bytes,
+                        audio_format,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Voice conversion failed: %s", type(exc).__name__
+                    )
+                    reply_content = "暂时无法识别这段语音，请稍后再试。"
                 else:
-                    try:
-                        voice_text = transcribe_audio(
-                            audio_bytes, f"voice.{audio_format}"
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "Voice transcription failed: %s", type(exc).__name__
-                        )
-                        reply_content = "暂时无法识别这段语音，请稍后再试。"
+                    if not is_within_rate_limit(user_id):
+                        reply_content = "消息发送太频繁，请稍后再试。"
+                    else:
+                        try:
+                            voice_text = transcribe_audio(
+                                wav_bytes,
+                                "voice.wav",
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Voice transcription failed: %s",
+                                type(exc).__name__,
+                            )
+                            reply_content = (
+                                "暂时无法识别这段语音，请稍后再试。"
+                            )
 
         if voice_text:
             if not is_within_rate_limit(user_id):
