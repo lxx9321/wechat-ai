@@ -9,6 +9,7 @@ from ai import ask_ai
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse, Response
+from memory import clear_history, get_history, save_turn
 
 
 load_dotenv()
@@ -76,14 +77,21 @@ async def handle_wechat_message(
         return PlainTextResponse("success")
 
     user_message = (fields["Content"] or "").strip()
-    if not user_message:
+    user_id = fields["FromUserName"] or ""
+    if user_message == "清空记忆":
+        clear_history(user_id)
+        reply_content = "聊天记忆已清空。"
+    elif not user_message:
         reply_content = "请输入内容后再发送。"
     else:
+        history = get_history(user_id)
         try:
-            reply_content = ask_ai(user_message)
+            reply_content = ask_ai(user_message, history)
         except Exception as exc:
             logger.warning("AI reply failed: %s", type(exc).__name__)
             reply_content = "AI 暂时无法回复，请稍后再试。"
+        else:
+            save_turn(user_id, user_message, reply_content)
 
     reply = ElementTree.Element("xml")
     reply_fields = {
