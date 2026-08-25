@@ -22,6 +22,14 @@ app = FastAPI()
 WECHAT_TOKEN = os.environ["WECHAT_TOKEN"]
 IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 2.0
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
+HELP_MESSAGE = (
+    "AI 助手使用说明：\n\n"
+    "1. 直接发送文字：与 AI 聊天\n\n"
+    "2. 发送图片：AI 分析图片内容和图片中的文字\n\n"
+    "3. 发送语音：识别语音内容并进行 AI 回复\n\n"
+    "4. 发送“清空记忆”：清除当前聊天上下文\n\n"
+    "5. 发送“帮助”：查看本说明"
+)
 
 
 class ImageDownloadError(RuntimeError):
@@ -126,13 +134,22 @@ async def handle_wechat_message(
 
     message_type = fields["MsgType"]
     user_id = fields["FromUserName"] or ""
-    if (
+    user_message = (
+        (fields["Content"] or "").strip() if message_type == "text" else ""
+    )
+    if message_type == "text" and user_message in {"帮助", "help"}:
+        reply_content = HELP_MESSAGE
+    elif message_type == "text" and user_message == "我的ID":
+        reply_content = (
+            f"你的用户ID：\n{user_id}\n\n"
+            "请将此ID提供给公众号管理员申请使用权限。"
+        )
+    elif (
         message_type in {"text", "image", "voice"}
         and not is_user_allowed(user_id)
     ):
         reply_content = "当前账号暂未开放AI功能。"
     elif message_type == "text":
-        user_message = (fields["Content"] or "").strip()
         if user_message == "清空记忆":
             clear_history(user_id)
             reply_content = "聊天记忆已清空。"
