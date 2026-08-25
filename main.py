@@ -1,9 +1,11 @@
 import hashlib
 import hmac
+import logging
 import os
 import time
 from xml.etree import ElementTree
 
+from ai import ask_ai
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse, Response
@@ -11,6 +13,7 @@ from fastapi.responses import PlainTextResponse, Response
 
 load_dotenv()
 
+logger = logging.getLogger(__name__)
 app = FastAPI()
 WECHAT_TOKEN = os.environ["WECHAT_TOKEN"]
 
@@ -72,13 +75,23 @@ async def handle_wechat_message(
     if fields["MsgType"] != "text":
         return PlainTextResponse("success")
 
+    user_message = (fields["Content"] or "").strip()
+    if not user_message:
+        reply_content = "请输入内容后再发送。"
+    else:
+        try:
+            reply_content = ask_ai(user_message)
+        except Exception as exc:
+            logger.warning("AI reply failed: %s", type(exc).__name__)
+            reply_content = "AI 暂时无法回复，请稍后再试。"
+
     reply = ElementTree.Element("xml")
     reply_fields = {
         "ToUserName": fields["FromUserName"],
         "FromUserName": fields["ToUserName"],
         "CreateTime": str(int(time.time())),
         "MsgType": "text",
-        "Content": f"收到你的消息：{fields['Content']}",
+        "Content": reply_content,
     }
 
     for name, value in reply_fields.items():

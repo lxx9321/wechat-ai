@@ -19,12 +19,13 @@ def ask_ai(message: str) -> str:
     if not api_key:
         raise AIError("缺少 OPENAI_API_KEY，请先在 .env 中配置。")
 
-    client = OpenAI(api_key=api_key)
+    client = OpenAI(api_key=api_key, timeout=5.0, max_retries=0)
 
     try:
         response = client.responses.create(
             model=MODEL_NAME,
             input=message,
+            reasoning={"effort": "minimal"},
         )
     except Exception as exc:
         safe_message = str(exc).replace(api_key, "[REDACTED]")
