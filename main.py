@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse, Response
 from memory import clear_history, get_history, save_turn
+from message_dedup import cache_reply, get_cached_reply
 from wechat_api import download_voice_media
 
 
@@ -22,6 +23,12 @@ app = FastAPI()
 WECHAT_TOKEN = os.environ["WECHAT_TOKEN"]
 IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 2.0
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
+WECHAT_MEDIA_VOICE_FALLBACK_ENABLED = (
+    os.getenv("WECHAT_MEDIA_VOICE_FALLBACK_ENABLED", "false")
+    .strip()
+    .lower()
+    == "true"
+)
 HELP_MESSAGE = (
     "AI 助手使用说明：\n\n"
     "1. 直接发送文字：与 AI 聊天\n\n"
@@ -134,6 +141,11 @@ async def handle_wechat_message(
 
     message_type = fields["MsgType"]
     user_id = fields["FromUserName"] or ""
+    message_id = (fields["MsgId"] or "").strip()
+    cached_response = get_cached_reply(message_id, user_id)
+    if cached_response is not None:
+        return Response(content=cached_response, media_type="application/xml")
+
     user_message = (
         (fields["Content"] or "").strip() if message_type == "text" else ""
     )
@@ -185,7 +197,9 @@ async def handle_wechat_message(
                     save_turn(user_id, "[用户发送了一张图片]", reply_content)
     elif message_type == "voice":
         voice_text = (fields["Recognition"] or "").strip()
-        if not voice_text:
+        if not voice_text and not WECHAT_MEDIA_VOICE_FALLBACK_ENABLED:
+            reply_content = "暂时无法识别这段语音，请稍后再试。"
+        elif not voice_text:
             try:
                 audio_bytes = await download_voice_media(fields["MediaId"])
             except Exception as exc:
@@ -249,4 +263,5 @@ async def handle_wechat_message(
         ElementTree.SubElement(reply, name).text = value
 
     response_body = ElementTree.tostring(reply, encoding="utf-8")
+    cache_reply(message_id, user_id, response_body)
     return Response(content=response_body, media_type="application/xml")
