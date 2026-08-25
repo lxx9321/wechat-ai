@@ -149,9 +149,10 @@ async def handle_wechat_message(
     user_message = (
         (fields["Content"] or "").strip() if message_type == "text" else ""
     )
-    if message_type == "text" and user_message in {"帮助", "help"}:
+    normalized_command = user_message.lower()
+    if message_type == "text" and normalized_command in {"帮助", "help"}:
         reply_content = HELP_MESSAGE
-    elif message_type == "text" and user_message == "我的ID":
+    elif message_type == "text" and normalized_command == "我的id":
         reply_content = (
             f"你的用户ID：\n{user_id}\n\n"
             "请将此ID提供给公众号管理员申请使用权限。"
@@ -162,7 +163,7 @@ async def handle_wechat_message(
     ):
         reply_content = "当前账号暂未开放AI功能。"
     elif message_type == "text":
-        if user_message == "清空记忆":
+        if normalized_command == "清空记忆":
             clear_history(user_id)
             reply_content = "聊天记忆已清空。"
         elif not user_message:
