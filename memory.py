@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_REDIS_URL = "redis://127.0.0.1:6379/0"
 DEFAULT_MAX_HISTORY_ROUNDS = 6
 DEFAULT_HISTORY_TTL_SECONDS = 604800
-ALLOWED_CHANNELS = frozenset({"wechat", "miniapp"})
+ALLOWED_CHANNELS = frozenset({"wechat", "web"})
 
 
 def _positive_int_from_env(name: str, default: int) -> int:
