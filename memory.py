@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_REDIS_URL = "redis://127.0.0.1:6379/0"
 DEFAULT_MAX_HISTORY_ROUNDS = 6
 DEFAULT_HISTORY_TTL_SECONDS = 604800
+ALLOWED_CHANNELS = frozenset({"wechat", "miniapp"})
 
 
 def _positive_int_from_env(name: str, default: int) -> int:
@@ -49,17 +50,24 @@ def _get_client() -> redis.Redis:
     return _redis_client
 
 
-def _history_key(user_id: str) -> str:
-    return f"wechat:history:{user_id}"
+def _validate_channel(channel: str) -> str:
+    if channel not in ALLOWED_CHANNELS:
+        raise ValueError("unsupported Redis channel")
+    return channel
+
+
+def _history_key(user_id: str, channel: str = "wechat") -> str:
+    return f"{_validate_channel(channel)}:history:{user_id}"
 
 
 def _log_failure(action: str, exc: Exception) -> None:
     logger.warning("Redis history %s failed: %s", action, type(exc).__name__)
 
 
-def get_history(user_id: str) -> list[dict]:
+def get_history(user_id: str, channel: str = "wechat") -> list[dict]:
+    key = _history_key(user_id, channel)
     try:
-        items = _get_client().lrange(_history_key(user_id), 0, -1)
+        items = _get_client().lrange(key, 0, -1)
         history = []
         for item in items:
             if isinstance(item, bytes):
@@ -80,9 +88,14 @@ def get_history(user_id: str) -> list[dict]:
         return []
 
 
-def save_turn(user_id: str, user_message: str, assistant_message: str) -> None:
+def save_turn(
+    user_id: str,
+    user_message: str,
+    assistant_message: str,
+    channel: str = "wechat",
+) -> None:
+    key = _history_key(user_id, channel)
     try:
-        key = _history_key(user_id)
         max_messages = MAX_HISTORY_ROUNDS * 2
         user_item = json.dumps(
             {"role": "user", "content": user_message},
@@ -104,8 +117,9 @@ def save_turn(user_id: str, user_message: str, assistant_message: str) -> None:
         _log_failure("write", exc)
 
 
-def clear_history(user_id: str) -> None:
+def clear_history(user_id: str, channel: str = "wechat") -> None:
+    key = _history_key(user_id, channel)
     try:
-        _get_client().delete(_history_key(user_id))
+        _get_client().delete(key)
     except Exception as exc:
         _log_failure("clear", exc)

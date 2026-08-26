@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_REDIS_URL = "redis://127.0.0.1:6379/0"
 DEFAULT_RATE_LIMIT_10_SECONDS = 3
 DEFAULT_RATE_LIMIT_60_SECONDS = 10
+ALLOWED_CHANNELS = frozenset({"wechat", "miniapp"})
 
 
 def _positive_int_from_env(name: str, default: int) -> int:
@@ -62,10 +63,20 @@ def _get_client() -> redis.Redis:
     return _redis_client
 
 
-def _rate_keys(user_id: str) -> tuple[str, str]:
+def _validate_channel(channel: str) -> str:
+    if channel not in ALLOWED_CHANNELS:
+        raise ValueError("unsupported Redis channel")
+    return channel
+
+
+def _rate_keys(
+    user_id: str,
+    channel: str = "wechat",
+) -> tuple[str, str]:
+    channel = _validate_channel(channel)
     return (
-        f"wechat:rate:{user_id}:10s",
-        f"wechat:rate:{user_id}:60s",
+        f"{channel}:rate:{user_id}:10s",
+        f"{channel}:rate:{user_id}:60s",
     )
 
 
@@ -85,8 +96,8 @@ def is_user_allowed(user_id: str) -> bool:
     return bool(user_id) and user_id in allowed_users
 
 
-def is_within_rate_limit(user_id: str) -> bool:
-    key_10s, key_60s = _rate_keys(user_id)
+def is_within_rate_limit(user_id: str, channel: str = "wechat") -> bool:
+    key_10s, key_60s = _rate_keys(user_id, channel)
     try:
         counts = _get_client().eval(
             _RATE_LIMIT_SCRIPT,

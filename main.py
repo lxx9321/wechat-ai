@@ -14,6 +14,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse, Response
 from memory import clear_history, get_history, save_turn
 from message_dedup import cache_reply, get_cached_reply
+from miniapp_api import router as miniapp_router
 from wechat_api import download_voice_media
 
 
@@ -21,6 +22,7 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 app = FastAPI()
+app.include_router(miniapp_router)
 WECHAT_TOKEN = os.environ["WECHAT_TOKEN"]
 IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 2.0
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
