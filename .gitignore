@@ -4,3 +4,4 @@ __pycache__/
 .env
 .env.*
 !.env.example
+miniapp/project.private.config.json
