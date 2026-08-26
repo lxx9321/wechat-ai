@@ -18,7 +18,7 @@
       <button
         class="clear-button"
         loading="{{clearing}}"
-        disabled="{{clearing || sending}}"
+        disabled="{{clearing || sending || imageAnalyzing}}"
         bindtap="handleClearMemory"
       >清空记忆</button>
     </view>
@@ -38,14 +38,28 @@
           id="{{item.id}}"
           class="message-row message-row--{{item.role}}"
         >
-          <view class="message-bubble message-bubble--{{item.role}} {{item.pending ? 'message-bubble--pending' : ''}}">
-            <text selectable="{{!item.pending}}">{{item.content}}</text>
+          <view class="message-bubble message-bubble--{{item.role}} {{item.type === 'image' ? 'message-bubble--image' : ''}} {{item.pending ? 'message-bubble--pending' : ''}}">
+            <image
+              wx:if="{{item.type === 'image'}}"
+              class="message-image"
+              src="{{item.imagePath}}"
+              mode="widthFix"
+              show-menu-by-longpress
+            />
+            <text wx:else selectable="{{!item.pending}}">{{item.content}}</text>
           </view>
         </view>
       </view>
     </scroll-view>
 
     <view class="composer">
+      <button
+        class="image-button"
+        loading="{{imageAnalyzing}}"
+        disabled="{{sending || imageAnalyzing || clearing}}"
+        bindtap="chooseImage"
+        aria-label="选择图片或拍照"
+      >图片</button>
       <textarea
         class="message-input"
         value="{{inputValue}}"
@@ -55,14 +69,14 @@
         maxlength="-1"
         confirm-type="send"
         confirm-hold="{{true}}"
-        disabled="{{sending}}"
+        disabled="{{sending || imageAnalyzing}}"
         bindinput="handleInput"
         bindconfirm="sendMessage"
       />
       <button
         class="send-button"
         loading="{{sending}}"
-        disabled="{{sending}}"
+        disabled="{{sending || imageAnalyzing}}"
         bindtap="sendMessage"
       >发送</button>
     </view>

@@ -2,7 +2,10 @@ const {
   clearAccessToken,
   ensureAuthenticated,
   request,
+  uploadFile,
 } = require("../../utils/request");
+
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
 let messageSequence = 0;
 
@@ -27,6 +30,25 @@ function getErrorMessage(error) {
   return "请求失败，请稍后重试。";
 }
 
+function getImageErrorMessage(error) {
+  if (error && (error.kind === "auth" || error.kind === "login")) {
+    return "登录失败，请重试。";
+  }
+  if (error && error.statusCode === 429) {
+    return "消息发送太频繁，请稍后再试。";
+  }
+  if (error && (error.statusCode === 413 || error.statusCode === 422)) {
+    return "图片格式或大小不符合要求。";
+  }
+  if (error && error.statusCode === 503) {
+    return "AI暂时无法分析这张图片，请稍后再试。";
+  }
+  if (error && error.kind === "network") {
+    return "网络连接失败，请稍后重试。";
+  }
+  return "图片上传失败，请稍后重试。";
+}
+
 Page({
   data: {
     messages: [],
@@ -36,6 +58,7 @@ Page({
     loginRetrying: false,
     historyLoading: false,
     sending: false,
+    imageAnalyzing: false,
     clearing: false,
   },
 
@@ -93,6 +116,7 @@ Page({
         .map((item) => ({
           id: nextMessageId(),
           role: item.role,
+          type: "text",
           content: item.content,
           pending: false,
         }));
@@ -122,7 +146,11 @@ Page({
   },
 
   async sendMessage() {
-    if (this.data.sending || this.data.loginStatus !== "ready") {
+    if (
+      this.data.sending ||
+      this.data.imageAnalyzing ||
+      this.data.loginStatus !== "ready"
+    ) {
       return;
     }
 
@@ -141,12 +169,14 @@ Page({
     const userMessage = {
       id: nextMessageId(),
       role: "user",
+      type: "text",
       content: message,
       pending: false,
     };
     const thinkingMessage = {
       id: nextMessageId(),
       role: "assistant",
+      type: "text",
       content: "AI 正在思考...",
       pending: true,
     };
@@ -172,6 +202,7 @@ Page({
       const assistantMessage = {
         id: thinkingMessage.id,
         role: "assistant",
+        type: "text",
         content: response.reply,
         pending: false,
       };
@@ -199,10 +230,123 @@ Page({
     }
   },
 
+  chooseImage() {
+    if (
+      this.data.sending ||
+      this.data.imageAnalyzing ||
+      this.data.clearing ||
+      this.data.loginStatus !== "ready"
+    ) {
+      return;
+    }
+
+    wx.chooseMedia({
+      count: 1,
+      mediaType: ["image"],
+      sourceType: ["album", "camera"],
+      success: (result) => {
+        const selectedFile = result.tempFiles && result.tempFiles[0];
+        if (!selectedFile || !selectedFile.tempFilePath) {
+          wx.showToast({ title: "图片选择失败，请重试。", icon: "none" });
+          return;
+        }
+        if (
+          typeof selectedFile.size === "number" &&
+          selectedFile.size > MAX_IMAGE_BYTES
+        ) {
+          wx.showToast({
+            title: "图片格式或大小不符合要求。",
+            icon: "none",
+          });
+          return;
+        }
+        this.sendImage(selectedFile.tempFilePath);
+      },
+      fail: (error) => {
+        if (!error || !String(error.errMsg || "").includes("cancel")) {
+          wx.showToast({ title: "图片选择失败，请重试。", icon: "none" });
+        }
+      },
+    });
+  },
+
+  async sendImage(imagePath) {
+    if (
+      this.data.sending ||
+      this.data.imageAnalyzing ||
+      this.data.loginStatus !== "ready"
+    ) {
+      return;
+    }
+
+    const imageMessage = {
+      id: nextMessageId(),
+      role: "user",
+      type: "image",
+      imagePath,
+      pending: false,
+    };
+    const thinkingMessage = {
+      id: nextMessageId(),
+      role: "assistant",
+      type: "text",
+      content: "AI 正在分析图片...",
+      pending: true,
+    };
+
+    this.messageRevision += 1;
+    this.setData({
+      messages: [...this.data.messages, imageMessage, thinkingMessage],
+      imageAnalyzing: true,
+      scrollTarget: thinkingMessage.id,
+    });
+
+    try {
+      const response = await uploadFile({
+        path: "/api/miniapp/v1/image",
+        filePath: imagePath,
+        name: "file",
+      });
+      if (!response || typeof response.reply !== "string") {
+        throw new Error("invalid image response");
+      }
+
+      const assistantMessage = {
+        id: thinkingMessage.id,
+        role: "assistant",
+        type: "text",
+        content: response.reply,
+        pending: false,
+      };
+      this.setData({
+        messages: this.data.messages.map((item) =>
+          item.id === thinkingMessage.id ? assistantMessage : item
+        ),
+        scrollTarget: assistantMessage.id,
+      });
+    } catch (error) {
+      this.setData({
+        messages: this.data.messages.filter(
+          (item) => item.id !== thinkingMessage.id
+        ),
+        scrollTarget: imageMessage.id,
+      });
+
+      if (error && (error.kind === "auth" || error.kind === "login")) {
+        clearAccessToken();
+        this.setData({ loginStatus: "error" });
+      }
+      wx.showToast({ title: getImageErrorMessage(error), icon: "none" });
+    } finally {
+      this.setData({ imageAnalyzing: false });
+    }
+  },
+
   handleClearMemory() {
     if (
       this.data.clearing ||
       this.data.sending ||
+      this.data.imageAnalyzing ||
       this.data.loginStatus !== "ready"
     ) {
       return;

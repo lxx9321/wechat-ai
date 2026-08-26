@@ -684,6 +684,246 @@ class MiniappChatTests(unittest.TestCase):
         self.assertFalse(inspect.iscoroutinefunction(miniapp_api.delete_memory))
 
 
+class MiniappImageTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(main.app)
+
+    def setUp(self):
+        self.original_auth_client = miniapp_auth._redis_client
+        self.original_memory_client = memory._redis_client
+        self.original_rate_client = access_control._redis_client
+        self.redis = FakeRedis()
+        miniapp_auth._redis_client = self.redis
+        memory._redis_client = self.redis
+        access_control._redis_client = self.redis
+
+    def tearDown(self):
+        miniapp_auth._redis_client = self.original_auth_client
+        memory._redis_client = self.original_memory_client
+        access_control._redis_client = self.original_rate_client
+
+    def _authorization(self, user_id="image-user"):
+        token, _ = miniapp_auth.create_session(user_id)
+        return token, {"Authorization": f"Bearer {token}"}
+
+    @staticmethod
+    def _image_bytes(mime_type):
+        samples = {
+            "image/jpeg": b"\xff\xd8\xff\xe0jpeg-image-data",
+            "image/png": b"\x89PNG\r\n\x1a\npng-image-data",
+            "image/webp": b"RIFF\x10\x00\x00\x00WEBPwebp-image-data",
+        }
+        return samples[mime_type]
+
+    def _post_image(self, headers, mime_type="image/jpeg", content=None):
+        image_bytes = self._image_bytes(mime_type) if content is None else content
+        return self.client.post(
+            "/api/miniapp/v1/image",
+            headers=headers,
+            files={"file": ("image.bin", image_bytes, mime_type)},
+        )
+
+    def test_image_requires_bearer_session(self):
+        no_token = self._post_image({})
+        wrong_token = self._post_image(
+            {"Authorization": "Bearer wrong-token"}
+        )
+
+        self.assertEqual(no_token.status_code, 401)
+        self.assertEqual(wrong_token.status_code, 401)
+
+    def test_image_accepts_jpeg_png_and_webp(self):
+        _, headers = self._authorization()
+        for mime_type in ("image/jpeg", "image/png", "image/webp"):
+            image_bytes = self._image_bytes(mime_type)
+            with self.subTest(mime_type=mime_type):
+                with (
+                    patch.object(
+                        miniapp_api,
+                        "is_within_rate_limit",
+                        return_value=True,
+                    ),
+                    patch.object(
+                        miniapp_api,
+                        "analyze_image",
+                        return_value="analysis result",
+                    ) as analyze_image,
+                    patch.object(miniapp_api, "save_turn") as save_turn,
+                ):
+                    response = self._post_image(headers, mime_type)
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json(), {"reply": "analysis result"})
+                analyze_image.assert_called_once_with(image_bytes, mime_type)
+                save_turn.assert_called_once_with(
+                    "image-user",
+                    miniapp_api.IMAGE_HISTORY_PLACEHOLDER,
+                    "analysis result",
+                    channel="miniapp",
+                )
+
+    def test_image_rejects_empty_non_image_mismatched_and_oversized_files(self):
+        _, headers = self._authorization()
+        oversized = b"\xff\xd8\xff" + b"x" * (
+            miniapp_api.MAX_IMAGE_BYTES - 2
+        )
+        invalid_files = (
+            ("image/jpeg", b"", 422),
+            ("text/plain", b"not-an-image", 422),
+            ("image/jpeg", b"not-a-jpeg", 422),
+            ("image/jpeg", oversized, 413),
+        )
+
+        with (
+            patch.object(miniapp_api, "is_within_rate_limit") as rate_limit,
+            patch.object(miniapp_api, "analyze_image") as analyze_image,
+        ):
+            for mime_type, content, expected_status in invalid_files:
+                with self.subTest(
+                    mime_type=mime_type,
+                    expected_status=expected_status,
+                ):
+                    response = self._post_image(
+                        headers,
+                        mime_type=mime_type,
+                        content=content,
+                    )
+                    self.assertEqual(response.status_code, expected_status)
+                    self.assertEqual(
+                        response.json(),
+                        {"detail": miniapp_api.INVALID_IMAGE_DETAIL},
+                    )
+
+        rate_limit.assert_not_called()
+        analyze_image.assert_not_called()
+
+    def test_image_uses_miniapp_rate_keys(self):
+        _, headers = self._authorization("same-user-id")
+        with (
+            patch.object(
+                miniapp_api,
+                "analyze_image",
+                return_value="analysis result",
+            ),
+            patch.object(miniapp_api, "save_turn"),
+        ):
+            response = self._post_image(headers)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            self.redis.last_eval_keys,
+            (
+                "miniapp:rate:same-user-id:10s",
+                "miniapp:rate:same-user-id:60s",
+            ),
+        )
+        self.assertNotIn(
+            "wechat:rate:same-user-id:10s",
+            self.redis.rate_counts,
+        )
+
+    def test_image_rate_limit_returns_429_without_analyzing(self):
+        _, headers = self._authorization()
+        with (
+            patch.object(
+                miniapp_api,
+                "is_within_rate_limit",
+                return_value=False,
+            ),
+            patch.object(miniapp_api, "analyze_image") as analyze_image,
+            patch.object(miniapp_api, "save_turn") as save_turn,
+        ):
+            response = self._post_image(headers)
+
+        self.assertEqual(response.status_code, 429)
+        analyze_image.assert_not_called()
+        save_turn.assert_not_called()
+
+    def test_image_analysis_failure_is_safe_and_does_not_save(self):
+        token, headers = self._authorization("never-log-image-user")
+        internal_error = "never-expose-image-error"
+        output = io.StringIO()
+        handler = logging.StreamHandler(output)
+        miniapp_api.logger.addHandler(handler)
+        try:
+            with (
+                patch.object(
+                    miniapp_api,
+                    "is_within_rate_limit",
+                    return_value=True,
+                ),
+                patch.object(
+                    miniapp_api,
+                    "analyze_image",
+                    side_effect=RuntimeError(internal_error),
+                ),
+                patch.object(miniapp_api, "save_turn") as save_turn,
+            ):
+                response = self._post_image(headers)
+        finally:
+            miniapp_api.logger.removeHandler(handler)
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(
+            response.json(),
+            {"detail": "AI暂时无法分析这张图片，请稍后再试。"},
+        )
+        save_turn.assert_not_called()
+        combined_output = response.text + output.getvalue()
+        self.assertNotIn(internal_error, combined_output)
+        self.assertNotIn("never-log-image-user", combined_output)
+        self.assertNotIn(token, combined_output)
+        self.assertNotIn("jpeg-image-data", combined_output)
+
+    def test_image_success_saves_only_text_in_isolated_history(self):
+        user_id = "same-user-id"
+        _, headers = self._authorization(user_id)
+        memory.save_turn(user_id, "wechat message", "wechat reply")
+
+        with (
+            patch.object(
+                miniapp_api,
+                "is_within_rate_limit",
+                return_value=True,
+            ),
+            patch.object(
+                miniapp_api,
+                "analyze_image",
+                return_value="图片里有一只猫。",
+            ),
+        ):
+            response = self._post_image(headers)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            memory.get_history(user_id, channel="miniapp"),
+            [
+                {
+                    "role": "user",
+                    "content": miniapp_api.IMAGE_HISTORY_PLACEHOLDER,
+                },
+                {"role": "assistant", "content": "图片里有一只猫。"},
+            ],
+        )
+        self.assertEqual(
+            memory.get_history(user_id),
+            [
+                {"role": "user", "content": "wechat message"},
+                {"role": "assistant", "content": "wechat reply"},
+            ],
+        )
+        raw_history = "".join(self.redis.lists["miniapp:history:same-user-id"])
+        self.assertNotIn("base64", raw_history.lower())
+        self.assertNotIn("jpeg-image-data", raw_history)
+        self.assertNotIn("image.bin", raw_history)
+
+    def test_image_route_is_synchronous(self):
+        import inspect
+
+        self.assertFalse(inspect.iscoroutinefunction(miniapp_api.image))
+
+
 class NamespaceCompatibilityTests(unittest.TestCase):
     def test_memory_default_and_miniapp_keys(self):
         self.assertEqual(

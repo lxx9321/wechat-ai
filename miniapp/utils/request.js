@@ -45,6 +45,30 @@ function rawRequest({ path, method = "GET", data, header = {} }) {
   });
 }
 
+function rawUploadFile({
+  path,
+  filePath,
+  name = "file",
+  formData,
+  header = {},
+}) {
+  return new Promise((resolve, reject) => {
+    wx.uploadFile({
+      url: `${API_BASE_URL}${path}`,
+      filePath,
+      name,
+      formData,
+      header,
+      success(response) {
+        resolve(response);
+      },
+      fail() {
+        reject(new RequestError("network"));
+      },
+    });
+  });
+}
+
 function getLoginCode() {
   return new Promise((resolve, reject) => {
     wx.login({
@@ -144,9 +168,42 @@ async function request(options, hasRetried = false) {
   return response.data;
 }
 
+async function uploadFile(options, hasRetried = false) {
+  const accessToken = await ensureAuthenticated();
+  const response = await rawUploadFile({
+    ...options,
+    header: {
+      ...(options.header || {}),
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  if (response.statusCode === 401) {
+    if (!hasRetried) {
+      await refreshAfterUnauthorized(accessToken);
+      return uploadFile(options, true);
+    }
+    clearAccessToken();
+    throw new RequestError("auth", 401);
+  }
+
+  if (response.statusCode < 200 || response.statusCode >= 300) {
+    throw new RequestError("api", response.statusCode);
+  }
+
+  try {
+    return typeof response.data === "string"
+      ? JSON.parse(response.data)
+      : response.data;
+  } catch (error) {
+    throw new RequestError("api", response.statusCode);
+  }
+}
+
 module.exports = {
   RequestError,
   clearAccessToken,
   ensureAuthenticated,
   request,
+  uploadFile,
 };
