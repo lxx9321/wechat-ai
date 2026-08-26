@@ -48,6 +48,15 @@ class ChatResponse(BaseModel):
     reply: str
 
 
+class HistoryMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+
+class HistoryResponse(BaseModel):
+    messages: list[HistoryMessage]
+
+
 class MemoryClearResponse(BaseModel):
     cleared: Literal[True] = True
 
@@ -116,6 +125,14 @@ def chat(
         channel="miniapp",
     )
     return ChatResponse(reply=reply)
+
+
+@router.get("/history", response_model=HistoryResponse)
+def history(
+    user_id: str = Depends(get_current_miniapp_user),
+) -> HistoryResponse:
+    messages = get_history(user_id, channel="miniapp")
+    return HistoryResponse(messages=messages)
 
 
 @router.delete("/memory", response_model=MemoryClearResponse)

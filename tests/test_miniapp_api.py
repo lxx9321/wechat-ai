@@ -103,6 +103,11 @@ class FailingRedis:
         raise ConnectionError("redis unavailable")
 
 
+class FailingHistoryRedis:
+    def lrange(self, *args, **kwargs):
+        raise ConnectionError("redis unavailable")
+
+
 class MiniappAPITests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -549,10 +554,133 @@ class MiniappChatTests(unittest.TestCase):
         self.assertEqual(self.redis.values[session_key], session_value)
         self.assertEqual(self.redis.rate_counts, rate_counts)
 
+    def test_history_requires_valid_bearer_session(self):
+        no_token = self.client.get("/api/miniapp/v1/history")
+        wrong_token = self.client.get(
+            "/api/miniapp/v1/history",
+            headers={"Authorization": "Bearer wrong-token"},
+        )
+        token, headers = self._authorization("expired-user")
+        self.redis.delete(miniapp_auth._session_key(token))
+        expired_token = self.client.get(
+            "/api/miniapp/v1/history",
+            headers=headers,
+        )
+
+        self.assertEqual(no_token.status_code, 401)
+        self.assertEqual(wrong_token.status_code, 401)
+        self.assertEqual(expired_token.status_code, 401)
+
+    def test_history_returns_503_when_session_redis_fails(self):
+        miniapp_auth._redis_client = FailingRedis()
+        response = self.client.get(
+            "/api/miniapp/v1/history",
+            headers={"Authorization": "Bearer token"},
+        )
+
+        self.assertEqual(response.status_code, 503)
+
+    def test_history_returns_empty_messages_for_new_user(self):
+        _, headers = self._authorization("new-user")
+        response = self.client.get(
+            "/api/miniapp/v1/history",
+            headers=headers,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"messages": []})
+
+    def test_history_returns_only_current_users_miniapp_messages_in_order(self):
+        user_id = "same-user-id"
+        _, headers = self._authorization(user_id)
+        memory.save_turn(
+            user_id,
+            "current first",
+            "current first reply",
+            channel="miniapp",
+        )
+        memory.save_turn(
+            user_id,
+            "current second",
+            "current second reply",
+            channel="miniapp",
+        )
+        memory.save_turn(user_id, "wechat message", "wechat reply")
+        memory.save_turn(
+            "other-user",
+            "other message",
+            "other reply",
+            channel="miniapp",
+        )
+
+        response = self.client.get(
+            "/api/miniapp/v1/history",
+            headers=headers,
+            params={"user_id": "other-user", "openid": "other-user"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "messages": [
+                    {"role": "user", "content": "current first"},
+                    {
+                        "role": "assistant",
+                        "content": "current first reply",
+                    },
+                    {"role": "user", "content": "current second"},
+                    {
+                        "role": "assistant",
+                        "content": "current second reply",
+                    },
+                ]
+            },
+        )
+        self.assertEqual(
+            set(response.json()["messages"][0]),
+            {"role", "content"},
+        )
+
+    def test_history_redis_failure_degrades_to_empty_messages(self):
+        _, headers = self._authorization("history-user")
+        memory._redis_client = FailingHistoryRedis()
+
+        response = self.client.get(
+            "/api/miniapp/v1/history",
+            headers=headers,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"messages": []})
+
+    def test_history_is_empty_after_memory_clear(self):
+        _, headers = self._authorization("history-user")
+        memory.save_turn(
+            "history-user",
+            "message",
+            "reply",
+            channel="miniapp",
+        )
+
+        cleared = self.client.delete(
+            "/api/miniapp/v1/memory",
+            headers=headers,
+        )
+        history_response = self.client.get(
+            "/api/miniapp/v1/history",
+            headers=headers,
+        )
+
+        self.assertEqual(cleared.status_code, 200)
+        self.assertEqual(history_response.status_code, 200)
+        self.assertEqual(history_response.json(), {"messages": []})
+
     def test_chat_and_memory_routes_are_synchronous(self):
         import inspect
 
         self.assertFalse(inspect.iscoroutinefunction(miniapp_api.chat))
+        self.assertFalse(inspect.iscoroutinefunction(miniapp_api.history))
         self.assertFalse(inspect.iscoroutinefunction(miniapp_api.delete_memory))
 
 

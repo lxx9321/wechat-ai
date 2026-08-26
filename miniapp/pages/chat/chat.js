@@ -34,12 +34,19 @@ Page({
     scrollTarget: "",
     loginStatus: "loading",
     loginRetrying: false,
+    historyLoading: false,
     sending: false,
     clearing: false,
   },
 
   onLoad() {
+    this.historyRequestVersion = 0;
+    this.messageRevision = 0;
     this.initializeLogin();
+  },
+
+  onUnload() {
+    this.historyRequestVersion += 1;
   },
 
   async initializeLogin(forceRefresh = false) {
@@ -50,8 +57,56 @@ Page({
     try {
       await ensureAuthenticated({ forceRefresh });
       this.setData({ loginStatus: "ready", loginRetrying: false });
+      this.loadHistory();
     } catch (error) {
       this.setData({ loginStatus: "error", loginRetrying: false });
+    }
+  },
+
+  async loadHistory() {
+    const requestVersion = this.historyRequestVersion + 1;
+    const messageRevision = this.messageRevision;
+    this.historyRequestVersion = requestVersion;
+    this.setData({ historyLoading: true });
+
+    try {
+      const response = await request({
+        path: "/api/miniapp/v1/history",
+      });
+      if (
+        requestVersion !== this.historyRequestVersion ||
+        messageRevision !== this.messageRevision
+      ) {
+        return;
+      }
+
+      const sourceMessages = Array.isArray(response && response.messages)
+        ? response.messages
+        : [];
+      const messages = sourceMessages
+        .filter(
+          (item) =>
+            item &&
+            (item.role === "user" || item.role === "assistant") &&
+            typeof item.content === "string"
+        )
+        .map((item) => ({
+          id: nextMessageId(),
+          role: item.role,
+          content: item.content,
+          pending: false,
+        }));
+      const lastMessage = messages[messages.length - 1];
+      this.setData({
+        messages,
+        scrollTarget: lastMessage ? lastMessage.id : "",
+      });
+    } catch (error) {
+      // History recovery is best-effort; a failure must not block new chats.
+    } finally {
+      if (requestVersion === this.historyRequestVersion) {
+        this.setData({ historyLoading: false });
+      }
     }
   },
 
@@ -96,6 +151,7 @@ Page({
       pending: true,
     };
 
+    this.messageRevision += 1;
     this.setData({
       messages: [...this.data.messages, userMessage, thinkingMessage],
       inputValue: "",
@@ -176,6 +232,8 @@ Page({
         throw new Error("invalid memory response");
       }
 
+      this.messageRevision += 1;
+      this.historyRequestVersion += 1;
       this.setData({ messages: [], scrollTarget: "" });
       wx.showToast({ title: "聊天记忆已清空。", icon: "success" });
     } catch (error) {
