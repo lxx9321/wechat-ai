@@ -1,0 +1,54 @@
+:root {
+  color-scheme: dark;
+
+  --color-bg: #070a0e;
+  --color-bg-subtle: #0b0f14;
+  --color-surface: #10161d;
+  --color-surface-raised: #151c24;
+  --color-surface-hover: #1b232d;
+  --color-border: #252e39;
+  --color-border-strong: #3a4552;
+  --color-text: #f4f0e8;
+  --color-text-secondary: #a7adb4;
+  --color-text-tertiary: #7e8792;
+  --color-accent: #c59a52;
+  --color-accent-focus: #d8b36c;
+  --color-accent-subtle: rgba(197, 154, 82, 0.12);
+  --color-danger: #d0645d;
+  --color-warning: #d9a74f;
+  --color-success: #58a27b;
+  --color-info: #668ac2;
+  --color-overlay: rgba(0, 0, 0, 0.6);
+
+  --font-display: "Songti SC", "STSong", "SimSun", serif;
+  --font-ui: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  --radius-control: 4px;
+  --radius-component: 6px;
+  --radius-overlay: 8px;
+
+  --border-default: 1px solid var(--color-border);
+  --border-strong: 1px solid var(--color-border-strong);
+  --border-focus: 1px solid var(--color-accent-focus);
+
+  --motion-hover: 160ms;
+  --motion-panel: 180ms;
+  --motion-reveal: 240ms;
+  --motion-easing: cubic-bezier(0.2, 0, 0, 1);
+
+  --header-height: 64px;
+  --desktop-left-stage: 38.8889%;
+  --desktop-right-stage: 61.1111%;
+}
+
